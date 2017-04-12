@@ -361,19 +361,30 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *seria
 static int packet_queue_get_or_buffering(FFPlayer *ffp, PacketQueue *q, AVPacket *pkt, int *serial, int *finished)
 {
     assert(finished);
-    if (!ffp->packet_buffering)
-        return packet_queue_get(q, pkt, 1, serial);
+//    if (!ffp->packet_buffering)
+//        return packet_queue_get(q, pkt, 1, serial);
 
     while (1) {
-        int new_packet = packet_queue_get(q, pkt, 0, serial);
+        int new_packet = packet_queue_get(q, pkt, 1, serial);
         if (new_packet < 0)
-            return -1;
-        else if (new_packet == 0) {
-            if (q->is_buffer_indicator && !*finished)
-                ffp_toggle_buffering(ffp, 1);
-            new_packet = packet_queue_get(q, pkt, 1, serial);
+        {
+            new_packet = packet_queue_get(q, pkt, 0, serial);
+            
             if (new_packet < 0)
                 return -1;
+        }
+        else if (new_packet == 0) {
+            if (!finished)
+//                ffp_toggle_buffering(ffp, 1);
+            new_packet = packet_queue_get(q, pkt, 1, serial);
+            
+            if (new_packet < 0)
+                return -1;
+//            if (q->is_buffer_indicator && !*finished)
+//                ffp_toggle_buffering(ffp, 1);
+//            new_packet = packet_queue_get(q, pkt, 1, serial);
+//            if (new_packet < 0)
+//                return -1;
         }
 
         if (*finished == *serial) {
@@ -453,22 +464,22 @@ static int decoder_decode_frame(FFPlayer *ffp, Decoder *d, AVFrame *frame, AVSub
                 }
                 }
                 break;
-            case AVMEDIA_TYPE_AUDIO:
-                ret = avcodec_decode_audio4(d->avctx, frame, &got_frame, &d->pkt_temp);
-                if (got_frame) {
-                    AVRational tb = (AVRational){1, frame->sample_rate};
-                    if (frame->pts != AV_NOPTS_VALUE)
-                        frame->pts = av_rescale_q(frame->pts, d->avctx->time_base, tb);
-                    else if (frame->pkt_pts != AV_NOPTS_VALUE)
-                        frame->pts = av_rescale_q(frame->pkt_pts, av_codec_get_pkt_timebase(d->avctx), tb);
-                    else if (d->next_pts != AV_NOPTS_VALUE)
-                        frame->pts = av_rescale_q(d->next_pts, d->next_pts_tb, tb);
-                    if (frame->pts != AV_NOPTS_VALUE) {
-                        d->next_pts = frame->pts + frame->nb_samples;
-                        d->next_pts_tb = tb;
-                    }
-                }
-                break;
+//            case AVMEDIA_TYPE_AUDIO:
+//                ret = avcodec_decode_audio4(d->avctx, frame, &got_frame, &d->pkt_temp);
+//                if (got_frame) {
+//                    AVRational tb = (AVRational){1, frame->sample_rate};
+//                    if (frame->pts != AV_NOPTS_VALUE)
+//                        frame->pts = av_rescale_q(frame->pts, d->avctx->time_base, tb);
+//                    else if (frame->pkt_pts != AV_NOPTS_VALUE)
+//                        frame->pts = av_rescale_q(frame->pkt_pts, av_codec_get_pkt_timebase(d->avctx), tb);
+//                    else if (d->next_pts != AV_NOPTS_VALUE)
+//                        frame->pts = av_rescale_q(d->next_pts, d->next_pts_tb, tb);
+//                    if (frame->pts != AV_NOPTS_VALUE) {
+//                        d->next_pts = frame->pts + frame->nb_samples;
+//                        d->next_pts_tb = tb;
+//                    }
+//                }
+//                break;
             // FFP_MERGE: case AVMEDIA_TYPE_SUBTITLE:
             default:
                 break;
@@ -896,7 +907,7 @@ static void stream_update_pause_l(FFPlayer *ffp)
 {
     VideoState *is = ffp->is;
     if (!is->step && (is->pause_req || is->buffering_on)) {
-        stream_toggle_pause_l(ffp, 1);
+        stream_toggle_pause_l(ffp, 0);
     } else {
         stream_toggle_pause_l(ffp, 0);
     }
@@ -2066,7 +2077,7 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     codec = avcodec_find_decoder(avctx->codec_id);
 
     switch (avctx->codec_type) {
-        case AVMEDIA_TYPE_AUDIO   : is->last_audio_stream    = stream_index; forced_codec_name = ffp->audio_codec_name; break;
+//        case AVMEDIA_TYPE_AUDIO   : is->last_audio_stream    = stream_index; forced_codec_name = ffp->audio_codec_name; break;
         // FFP_MERGE: case AVMEDIA_TYPE_SUBTITLE:
         case AVMEDIA_TYPE_VIDEO   : is->last_video_stream    = stream_index; forced_codec_name = ffp->video_codec_name; break;
         default: break;
@@ -2116,55 +2127,55 @@ static int stream_component_open(FFPlayer *ffp, int stream_index)
     is->eof = 0;
     ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
     switch (avctx->codec_type) {
-    case AVMEDIA_TYPE_AUDIO:
-#if CONFIG_AVFILTER
-        {
-            AVFilterLink *link;
-
-            is->audio_filter_src.freq           = avctx->sample_rate;
-            is->audio_filter_src.channels       = avctx->channels;
-            is->audio_filter_src.channel_layout = get_valid_channel_layout(avctx->channel_layout, avctx->channels);
-            is->audio_filter_src.fmt            = avctx->sample_fmt;
-            if ((ret = configure_audio_filters(is, afilters, 0)) < 0)
-                goto fail;
-            link = is->out_audio_filter->inputs[0];
-            sample_rate    = link->sample_rate;
-            nb_channels    = link->channels;
-            channel_layout = link->channel_layout;
-        }
-#else
-        sample_rate    = avctx->sample_rate;
-        nb_channels    = avctx->channels;
-        channel_layout = avctx->channel_layout;
-#endif
-
-        /* prepare audio output */
-        if ((ret = audio_open(ffp, channel_layout, nb_channels, sample_rate, &is->audio_tgt)) < 0)
-            goto fail;
-        ffp_set_audio_codec_info(ffp, AVCODEC_MODULE_NAME, avcodec_get_name(avctx->codec_id));
-        is->audio_hw_buf_size = ret;
-        is->audio_src = is->audio_tgt;
-        is->audio_buf_size  = 0;
-        is->audio_buf_index = 0;
-
-        /* init averaging filter */
-        is->audio_diff_avg_coef  = exp(log(0.01) / AUDIO_DIFF_AVG_NB);
-        is->audio_diff_avg_count = 0;
-        /* since we do not have a precise anough audio fifo fullness,
-           we correct audio sync only if larger than this threshold */
-        is->audio_diff_threshold = 2.0 * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec;
-
-        is->audio_stream = stream_index;
-        is->audio_st = ic->streams[stream_index];
-
-        decoder_init(&is->auddec, avctx, &is->audioq, is->continue_read_thread);
-        if ((is->ic->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK)) && !is->ic->iformat->read_seek) {
-            is->auddec.start_pts = is->audio_st->start_time;
-            is->auddec.start_pts_tb = is->audio_st->time_base;
-        }
-        decoder_start(&is->auddec, audio_thread, ffp, "ff_audio_dec");
-        SDL_AoutPauseAudio(ffp->aout, 0);
-        break;
+//    case AVMEDIA_TYPE_AUDIO:
+//#if CONFIG_AVFILTER
+//        {
+//            AVFilterLink *link;
+//
+//            is->audio_filter_src.freq           = avctx->sample_rate;
+//            is->audio_filter_src.channels       = avctx->channels;
+//            is->audio_filter_src.channel_layout = get_valid_channel_layout(avctx->channel_layout, avctx->channels);
+//            is->audio_filter_src.fmt            = avctx->sample_fmt;
+//            if ((ret = configure_audio_filters(is, afilters, 0)) < 0)
+//                goto fail;
+//            link = is->out_audio_filter->inputs[0];
+//            sample_rate    = link->sample_rate;
+//            nb_channels    = link->channels;
+//            channel_layout = link->channel_layout;
+//        }
+//#else
+//        sample_rate    = avctx->sample_rate;
+//        nb_channels    = avctx->channels;
+//        channel_layout = avctx->channel_layout;
+//#endif
+//
+//        /* prepare audio output */
+//        if ((ret = audio_open(ffp, channel_layout, nb_channels, sample_rate, &is->audio_tgt)) < 0)
+//            goto fail;
+//        ffp_set_audio_codec_info(ffp, AVCODEC_MODULE_NAME, avcodec_get_name(avctx->codec_id));
+//        is->audio_hw_buf_size = ret;
+//        is->audio_src = is->audio_tgt;
+//        is->audio_buf_size  = 0;
+//        is->audio_buf_index = 0;
+//
+//        /* init averaging filter */
+//        is->audio_diff_avg_coef  = exp(log(0.01) / AUDIO_DIFF_AVG_NB);
+//        is->audio_diff_avg_count = 0;
+//        /* since we do not have a precise anough audio fifo fullness,
+//           we correct audio sync only if larger than this threshold */
+//        is->audio_diff_threshold = 2.0 * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec;
+//
+//        is->audio_stream = stream_index;
+//        is->audio_st = ic->streams[stream_index];
+//
+//        decoder_init(&is->auddec, avctx, &is->audioq, is->continue_read_thread);
+//        if ((is->ic->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK)) && !is->ic->iformat->read_seek) {
+//            is->auddec.start_pts = is->audio_st->start_time;
+//            is->auddec.start_pts_tb = is->audio_st->time_base;
+//        }
+//        decoder_start(&is->auddec, audio_thread, ffp, "ff_audio_dec");
+//        SDL_AoutPauseAudio(ffp->aout, 0);
+//        break;
     case AVMEDIA_TYPE_VIDEO:
         is->video_stream = stream_index;
         is->video_st = ic->streams[stream_index];
@@ -2338,6 +2349,7 @@ static int read_thread(void *arg)
         av_dict_set(&ffp->format_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
         scan_all_pmts_set = 1;
     }
+    ic->max_analyze_duration2 = 3 * 1000 * 1000;
     if (ffp->format_control_message) {
         av_format_set_control_message_cb(ic, ffp_format_control_message);
         av_format_set_opaque(ic, ffp);
@@ -2347,6 +2359,8 @@ static int read_thread(void *arg)
         // There is total different meaning for 'timeout' option in rtmp
         av_log(ffp, AV_LOG_WARNING, "remove 'timeout' option for rtmp.\n");
         av_dict_set(&ffp->format_opts, "timeout", NULL, 0);
+//        av_dict_set(&ffp->format_opts, "initial_timeout", "5000000", 0);
+//        av_dict_set(&ffp->format_opts, "stimeout", "500000", 0); //us
     }
     err = avformat_open_input(&ic, is->filename, is->iformat, &ffp->format_opts);
     if (err < 0) {
@@ -2365,6 +2379,9 @@ static int read_thread(void *arg)
 #endif
     }
     is->ic = ic;
+    
+    ic->max_delay = 50000;
+    // ic->probesize = 4096;
 
     if (ffp->genpts)
         ic->flags |= AVFMT_FLAG_GENPTS;
@@ -2655,7 +2672,7 @@ static int read_thread(void *arg)
             }
             /* wait 10 ms */
             SDL_LockMutex(wait_mutex);
-            SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
+//            SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
@@ -2700,23 +2717,23 @@ static int read_thread(void *arg)
             if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof) {
                 if (is->video_stream >= 0)
                     packet_queue_put_nullpacket(&is->videoq, is->video_stream);
-                if (is->audio_stream >= 0)
-                    packet_queue_put_nullpacket(&is->audioq, is->audio_stream);
-#ifdef FFP_MERGE
-                if (is->subtitle_stream >= 0)
-                    packet_queue_put_nullpacket(&is->subtitleq, is->subtitle_stream);
-#endif
+//                if (is->audio_stream >= 0)
+//                    packet_queue_put_nullpacket(&is->audioq, is->audio_stream);
+//#ifdef FFP_MERGE
+//                if (is->subtitle_stream >= 0)
+//                    packet_queue_put_nullpacket(&is->subtitleq, is->subtitle_stream);
+//#endif
                 is->eof = 1;
             }
             if (ic->pb && ic->pb->error) {
                 if (is->video_stream >= 0)
                     packet_queue_put_nullpacket(&is->videoq, is->video_stream);
-                if (is->audio_stream >= 0)
-                    packet_queue_put_nullpacket(&is->audioq, is->audio_stream);
-#ifdef FFP_MERGE
-                if (is->subtitle_stream >= 0)
-                    packet_queue_put_nullpacket(&is->subtitleq, is->subtitle_stream);
-#endif
+//                if (is->audio_stream >= 0)
+//                    packet_queue_put_nullpacket(&is->audioq, is->audio_stream);
+//#ifdef FFP_MERGE
+//                if (is->subtitle_stream >= 0)
+//                    packet_queue_put_nullpacket(&is->subtitleq, is->subtitle_stream);
+//#endif
                 is->eof = 1;
                 ffp->error = ic->pb->error;
                 av_log(ffp, AV_LOG_ERROR, "av_read_frame error: %x(%c,%c,%c,%c): %s\n", ffp->error,
@@ -2734,7 +2751,7 @@ static int read_thread(void *arg)
                 SDL_Delay(1000);
             }
             SDL_LockMutex(wait_mutex);
-            SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
+//            SDL_CondWaitTimeout(is->continue_read_thread, wait_mutex, 10);
             SDL_UnlockMutex(wait_mutex);
             continue;
         } else {

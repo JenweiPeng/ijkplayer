@@ -203,7 +203,6 @@
     [self setPlayerOptionIntValue:value forKey:@"videotoolbox-max-frame-width"];
 }
 
-
 #pragma mark Format options
 
 -(void)setReconnect:(int)value
@@ -220,7 +219,6 @@
 {
     [self setFormatOptionValue:value forKey:@"user-agent"];
 }
-
 
 #pragma mark Codec options
 
